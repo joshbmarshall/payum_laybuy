@@ -24,9 +24,5 @@ class LaybuyGatewayFactory extends GatewayFactory
             'payum.action.status' => new StatusAction(),
             'payum.action.convert_payment' => new ConvertPaymentAction(),
         ]);
-
-        $payumPaths = $config['payum.paths'];
-        $payumPaths['PayumLaybuy'] = __DIR__ . '/Resources/views';
-        $config['payum.paths'] = $payumPaths;
     }
 }
