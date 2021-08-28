@@ -26,8 +26,7 @@ $payum = (new PayumBuilder)
     ->addGateway('laybuy', [
         'factory' => 'laybuy',
         'merchantId' => 'Your merchant Id',
-        'publicKey' => 'Your Public Key',
-        'privateKey' => 'Your Private Key',
+        'authenticationKey' => 'Your Authentication Key',
         'sandbox' => true,
     ])
 
@@ -53,8 +52,43 @@ $payment->setCurrencyCode($currency);
 $payment->setTotalAmount(100); // Total cents
 $payment->setDescription(substr($description, 0, 45));
 $payment->setDetails([
-        'local' => [
-        'email' => $email, // Used for the customer to be able to save payment details
+    'local' => [
+    ],
+    'merchant_reference' => 'MYREF',
+    'shopper' => [
+        'first_name' => '',
+        'last_name'] => '',
+        'email' => '',
+        'phone' => '',
+        'billing_address' => [
+            'line1' => '',
+            'line2' => '',
+            'city' => '',
+            'postal_code' => '',
+            'country' => '',
+        ],
+    ],
+    'order' => [
+        'shipping' => [
+            'address' => [
+            'line1' => '',
+            'line2' => '',
+            'city' => '',
+            'postal_code' => '',
+            'country' => '',
+        ],
+        'items' => [
+            [
+                'name' => 'Product 1',
+                'amount' => 49.95,
+                'quantity' => 2,
+            ],
+            [
+                'name' => 'Shipping',
+                'amount' => 9.95,
+                'quantity' => 1,
+            ],
+        ],
     ],
 ]);
 $storage->setInternalDetails($payment, $request);
