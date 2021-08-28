@@ -25,7 +25,7 @@ class StatusAction implements ActionInterface
             return;
         }
 
-        if (false == $model['status'] && false == $model['nonce']) {
+        if (false == $model['status']) {
             $request->markNew();
 
             return;

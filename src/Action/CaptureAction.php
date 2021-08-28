@@ -8,7 +8,8 @@ use Payum\Core\Exception\RequestNotSupportedException;
 use Payum\Core\GatewayAwareInterface;
 use Payum\Core\GatewayAwareTrait;
 use Payum\Core\Request\Capture;
-use Cognito\PayumLaybuy\Request\Api\ObtainNonce;
+use Payum\Core\Request\GetHttpRequest;
+use Payum\Core\Reply\HttpRedirect;
 
 class CaptureAction implements ActionInterface, GatewayAwareInterface {
     use GatewayAwareTrait;
@@ -34,40 +35,129 @@ class CaptureAction implements ActionInterface, GatewayAwareInterface {
         if ($model['status']) {
             return;
         }
-
-        $model['laybuyGateway'] = new \Laybuy\Gateway([
-            'environment' => $this->config['sandbox'] ? 'sandbox' : 'production',
-            'merchantId' => $this->config['merchantId'],
-            'publicKey' => $this->config['publicKey'],
-            'privateKey' => $this->config['privateKey'],
-        ]);
-
-        $obtainNonce = new ObtainNonce($request->getModel());
-        $obtainNonce->setModel($model);
-
-        $this->gateway->execute($obtainNonce);
-
-        if (!$model->offsetExists('status')) {
-            // Create transaction
-            $transactionResult = $model['laybuyGateway']->transaction()->sale([
-                'amount' => $model['amount'],
-                'paymentMethodNonce' => $model['nonce'],
-                //'deviceData' => $deviceDataFromTheClient,
-                'options' => [
-                    'submitForSettlement' => true
-                ]
-            ]);
-            if ($transactionResult->success) {
-                // Report successful
-                $model['status'] = 'success';
-            } else {
-                // Report error
-                $model['status'] = 'failed';
-                $model['error'] = 'failed';
+        $getHttpRequest = new GetHttpRequest();
+        $this->gateway->execute($getHttpRequest);
+        if ($getHttpRequest->method == 'GET' && isset($getHttpRequest->request['status'])) {
+            if ($model['laybuy_token'] != $getHttpRequest->request['token']) {
+                $model['status'] = 'error';
+                $model['error'] = 'Token does not match';
+                return;
             }
-            $model['transactionReference'] = $transactionResult->transaction->id;
-            $model['result'] = $transactionResult->transaction;
+            if ($getHttpRequest->request['status'] == 'CANCELLED') {
+                $model['status'] = 'error';
+                $model['error'] = 'Cancelled by customer';
+                return;
+            }
+            if ($getHttpRequest->request['status'] == 'SUCCESS') {
+                // Do the call to laybuy to complete the payment
+                $data = [
+                    'token' => $model['laybuy_token'],
+                    'amount' => $model['amount'],
+                    'currency' => $model['currency'],
+                ];
+                $result = $this->doPostRequest('/order/confirm', $data);
+                if ($result['result'] == 'SUCCESS') {
+                    $model['status'] = 'success';
+                    $model['transactionReference'] = $result['orderId'];
+                    $model['result'] = 'success';
+                    return;
+                }
+                $model['status'] = 'error';
+                $model['error'] = 'Payment was not approved: ' . $result['error'];
+                return;
+            }
+            $model['status'] = 'failed';
+            $model['error'] = 'Unknown status: ' . $getHttpRequest->request['status'];
+            return;
         }
+        $payment_id = $model['merchant_reference'];
+
+        $data = [
+            'amount' => $model['amount'],
+            'currency' => $model['currency'],
+            'returnUrl' => $request->getToken()->getTargetUrl(),
+            'merchantReference' => $payment_id,
+            'customer' => [
+                "firstName" => $model['shopper']['first_name'],
+                "lastName" => $model['shopper']['last_name'],
+                "email" => $model['shopper']['email'],
+                "phone" => $model['shopper']['phone'],
+            ],
+            "billingAddress" => [
+                "address1" => trim($model['shopper']['billing_address']['line1'] . ' ' . $model['shopper']['billing_address']['line2']),
+                "city" => $model['shopper']['billing_address']['city'],
+                "postcode" => $model['shopper']['billing_address']['postal_code'],
+                "country" => $model['shopper']['billing_address']['country'],
+            ],
+            "shippingAddress" => [
+                "address1" => trim($model['order']['shipping']['address']['line1'] . ' ' . $model['order']['shipping']['address']['line2']),
+                "city" => $model['order']['shipping']['address']['city'],
+                "postcode" => $model['order']['shipping']['address']['postal_code'],
+                "country" => $model['order']['shipping']['address']['country'],
+            ],
+            "items" => [],
+        ];
+        $itemcnt = 0;
+        foreach ($model['order']['items'] as $item) {
+            $itemcnt++;
+            $data['items'][] = [
+                "id" => $payment_id . '-' . $itemcnt,
+                "description" => $item['name'],
+                "quantity" => $item['quantity'],
+                "price" => $item['amount'],
+            ];
+        }
+
+        $returned_data = $this->doPostRequest('/order/create', $data);
+        $model['laybuy_token'] = $returned_data['token'];
+        throw new HttpRedirect($returned_data['paymentUrl']);
+    }
+
+    /**
+     * Get the site to use
+     * @return string
+     */
+    public function baseurl() {
+        if ($this->config['sandbox']) {
+            return 'https://sandbox-api.laybuy.com';
+        } else {
+            return 'https://api.laybuy.com';
+        }
+    }
+
+    /**
+     * Perform POST request to Laybuy servers
+     * @param string $url relative path
+     * @param string $data json encoded data
+     * @return array
+     */
+    public function doPostRequest($url, $data) {
+        $curl = curl_init();
+
+        curl_setopt_array($curl, [
+            CURLOPT_URL => $this->baseurl() . $url,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_ENCODING => "",
+            CURLOPT_MAXREDIRS => 10,
+            CURLOPT_TIMEOUT => 30,
+            CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
+            CURLOPT_CUSTOMREQUEST => "POST",
+            CURLOPT_HTTPHEADER => [
+                "Accept: application/json",
+                'Authorization: Basic ' . base64_encode($this->config['merchantId'] . ':' . $this->config['authenticationKey']),
+                "Content-Type: application/json"
+            ],
+            CURLOPT_POSTFIELDS => json_encode($data),
+        ]);
+        $response = curl_exec($curl);
+        $err = curl_error($curl);
+
+        curl_close($curl);
+
+        if ($err) {
+            throw new \Exception($err);
+        }
+        return json_decode($response, true);
     }
 
     /**
