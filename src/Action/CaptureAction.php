@@ -66,7 +66,7 @@ class CaptureAction implements ActionInterface, GatewayAwareInterface {
                 $model['error'] = 'Payment was not approved: ' . $result['error'];
                 return;
             }
-            $model['status'] = 'failed';
+            $model['status'] = 'error';
             $model['error'] = 'Unknown status: ' . $getHttpRequest->request['status'];
             return;
         }
@@ -98,6 +98,7 @@ class CaptureAction implements ActionInterface, GatewayAwareInterface {
             "items" => [],
         ];
         $itemcnt = 0;
+        $order_total = 0;
         foreach ($model['order']['items'] as $item) {
             $itemcnt++;
             $data['items'][] = [
@@ -106,9 +107,26 @@ class CaptureAction implements ActionInterface, GatewayAwareInterface {
                 "quantity" => $item['quantity'],
                 "price" => $item['amount'],
             ];
+            $order_total += $item['amount'];
+        }
+        $order_total = round($order_total, 2);
+        if ($order_total != $model['amount']) {
+            // Create a discount / surcharge line
+            $itemcnt++;
+            $data['items'][] = [
+                "id" => $payment_id . '-' . $itemcnt,
+                "description" => 'Adjustment',
+                "quantity" => 1,
+                "price" => round($model['amount'] - $order_total, 2),
+            ];
         }
 
         $returned_data = $this->doPostRequest('/order/create', $data);
+        if ($returned_data['result'] == 'ERROR') {
+            $model['status'] = 'error';
+            $model['error'] = 'Could not create the order: ' . $returned_data['error'];
+            return;
+        }
         $model['laybuy_token'] = $returned_data['token'];
         throw new HttpRedirect($returned_data['paymentUrl']);
     }
